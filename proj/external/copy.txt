@@ -1,0 +1,1 @@
+\CocosCreator\resources\cocos2d-x\external
