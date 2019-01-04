@@ -27,16 +27,11 @@ struct class_SM {
 	JSCompartment *compartment;
 
 	JS::CallArgs invokeArgs; //javascript::invoke()
-	std::list<void *> rubbish; //垃圾桶
-} self;
+	char* charArray = nullptr;
+	int intArray[1024];
+	double doubleArray[1024];
 
-inline void freeAll() {
-	if (self.rubbish.empty()) return;
-	for (auto iter = self.rubbish.begin(); iter != self.rubbish.end(); iter++) {
-		JS_free(self.cx, *iter);
-	}
-	self.rubbish.clear();
-}
+} self;
 
 //-----------------------------------------------------
 
@@ -123,7 +118,6 @@ static bool invoke(JSContext *cx, unsigned argc, JS::Value *vp) { //反射
 
 		self.invokeArgs = args;
 		bool ok = self.onInvoke(clazz, func, argc - 2);
-		freeAll();
 		return ok;
 
 	} else {
@@ -227,7 +221,6 @@ bool startupEngine(OnImportScripts onImportScripts, OnAlert onAlert, OnInvoke on
 bool shutdownEngine() {
 	if (!_Inited || !self.cx)
 		return false;
-	freeAll();
 	JS_GC(self.cx);
 	JS_LeaveCompartment(self.cx, self.compartment);
 	JS_EndRequest(self.cx);
@@ -271,34 +264,133 @@ bool readBoolean(int i) { //读取invoke参数
 int readInt(int i) {
 	const JS::CallArgs args = self.invokeArgs;
 	JS::HandleValue v = args.get(i + 2);
-	return v.isInt32() ? v.toInt32() : 0;
+	if (v.isInt32()) {
+		return v.toInt32();
+	} else if (v.isNumber()) {
+		return (int)v.toNumber();
+	}
+	return 0;
+}
+
+IntArray readIntArray(int i) {
+	const JS::CallArgs args = self.invokeArgs;
+	JS::HandleValue v = args.get(i + 2);
+	IntArray res;
+	bool isArray;
+	JS_IsArrayObject(self.cx, v, &isArray);
+	if (isArray) {
+		JS::RootedObject obj(self.cx, v.toObjectOrNull());
+		uint32_t len;
+		JS_GetArrayLength(self.cx, obj, &len);
+
+		JS::RootedValue ev(self.cx);
+		int* arr = self.intArray;
+		for (int x = 0; x < len; x++) {
+			JS_GetElement(self.cx, obj, x, &ev);
+			if (ev.isInt32()) {
+				arr[x] = ev.toInt32();
+			} else if (ev.isNumber()) {
+				arr[x] = (int)ev.toDouble();
+			} else {
+				arr[x] = 0;
+			}
+		}
+
+		res.length = len;
+		res.p = arr;
+
+	} else {
+		res.length = -1;
+		res.p = nullptr;
+	}
+	return res;
 }
 
 double readDouble(int i) {
 	const JS::CallArgs args = self.invokeArgs;
 	JS::HandleValue v = args.get(i + 2);
-	return v.isNumber() ? v.toNumber() : 0.0;
+	if (v.isInt32()) {
+		return (double)v.toInt32();
+	} else if (v.isNumber()) {
+		return v.toNumber();
+	}
+	return 0.0;
 }
 
-Words readString(int i) {
+DoubleArray readDoubleArray(int i) {
 	const JS::CallArgs args = self.invokeArgs;
 	JS::HandleValue v = args.get(i + 2);
-	Words w;
+	DoubleArray res;
+	bool isArray;
+	JS_IsArrayObject(self.cx, v, &isArray);
+	if (isArray) {
+		JS::RootedObject obj(self.cx, v.toObjectOrNull());
+		uint32_t len;
+		JS_GetArrayLength(self.cx, obj, &len);
+
+		JS::RootedValue ev(self.cx);
+		double* arr = self.doubleArray;
+		for (int x = 0; x < len; x++) {
+			JS_GetElement(self.cx, obj, x, &ev);
+			if (ev.isInt32()) {
+				arr[x] = (double)ev.toInt32();
+			} else if (ev.isNumber()) {
+				arr[x] = ev.toDouble();
+			} else {
+				arr[x] = 0;
+			}
+		}
+
+		res.length = len;
+		res.p = arr;
+
+	} else {
+		res.length = -1;
+		res.p = nullptr;
+	}
+	return res;
+}
+
+CharArray readString(int i) {
+	const JS::CallArgs args = self.invokeArgs;
+	JS::HandleValue v = args.get(i + 2);
+	CharArray res;
+	if (self.charArray != nullptr) {
+		JS_free(self.cx, self.charArray);
+	}
 	if (v.isString()) {
 		//JS::AutoCheckCannotGC nogc;
 		//w.s = JS_GetTwoByteStringCharsAndLength(self.cx, nogc, v.toString(), &w.length);
 		JS::RootedString rs(self.cx, v.toString());
-		w.s = JS_EncodeStringToUTF8(self.cx, rs);
-		w.length = strlen(w.s);
-		self.rubbish.push_back(w.s);
+		char* s = JS_EncodeStringToUTF8(self.cx, rs);
+		res.p = s;
+		res.length = strlen(s);
+		self.charArray = s;
 	} else {
-		w.s = nullptr;
-		w.length = 0;
+		res.p = nullptr;
+		res.length = -1;
 	}
-	return w;
+	return res;
 }
 
 //-----------------------------------------------------
+
+void returnObject(int id, int hash) {
+	const JS::CallArgs args = self.invokeArgs;
+	if (id <= 0) {
+		args.rval().setUndefined();
+	} else {
+		JS::RootedObject jsObj(self.cx, JS_NewPlainObject(self.cx));
+		JS::RootedValue rv1(self.cx);
+		JS::RootedValue rv2(self.cx);
+		rv1.setInt32(id);
+		rv2.setInt32(hash);
+		JS_SetProperty(self.cx, jsObj, "id", rv1);
+		JS_SetProperty(self.cx, jsObj, "hash", rv2);
+		args.rval().setObjectOrNull(jsObj);
+		JS_FreezeObject(self.cx, jsObj);
+	}
+}
 
 void returnBoolean(bool b) { //invoke返回值
 	const JS::CallArgs args = self.invokeArgs;
@@ -310,37 +402,9 @@ void returnInt(int i) {
 	args.rval().setInt32(i);
 }
 
-void returnIntArray(const int *iArr, size_t length) {
-	const JS::CallArgs args = self.invokeArgs;
-	if (length <= 0) {
-		args.rval().setUndefined();
-	} else {
-		JSObject *o = JS_NewArrayObject(self.cx, length);
-		JS::RootedObject ro(self.cx, o);
-		for (size_t aN = 0; aN < length; aN++) {
-			JS_SetElement(self.cx, ro, aN, iArr[aN]);
-		}
-		args.rval().setObject(*o);
-	}
-}
-
 void returnDouble(double d) {
 	const JS::CallArgs args = self.invokeArgs;
 	args.rval().setDouble(d);
-}
-
-void returnDoubleArray(const double *dArr, size_t length) {
-	const JS::CallArgs args = self.invokeArgs;
-	if (length <= 0) {
-		args.rval().setUndefined();
-	} else {
-		JSObject *o = JS_NewArrayObject(self.cx, length);
-		JS::RootedObject ro(self.cx, o);
-		for (size_t aN = 0; aN < length; aN++) {
-			JS_SetElement(self.cx, ro, aN, dArr[aN]);
-		}
-		args.rval().setObject(*o);
-	}
 }
 
 void returnString(const char16_t* s) {
@@ -349,6 +413,32 @@ void returnString(const char16_t* s) {
 		args.rval().setUndefined();
 	} else {
 		args.rval().setString(JS_NewUCStringCopyZ(self.cx, s));
+	}
+}
+
+void returnIntArray(const int *iArr, size_t length) {
+	const JS::CallArgs args = self.invokeArgs;
+	if (iArr == nullptr) {
+		args.rval().setUndefined();
+	} else {
+		JS::RootedObject ro(self.cx, JS_NewArrayObject(self.cx, length));
+		for (size_t aN = 0; aN < length; aN++) {
+			JS_SetElement(self.cx, ro, aN, iArr[aN]);
+		}
+		args.rval().setObjectOrNull(ro);
+	}
+}
+
+void returnDoubleArray(const double *dArr, size_t length) {
+	const JS::CallArgs args = self.invokeArgs;
+	if (dArr == nullptr) {
+		args.rval().setUndefined();
+	} else {
+		JS::RootedObject ro(self.cx, JS_NewArrayObject(self.cx, length));
+		for (size_t aN = 0; aN < length; aN++) {
+			JS_SetElement(self.cx, ro, aN, dArr[aN]);
+		}
+		args.rval().setObjectOrNull(ro);
 	}
 }
 
@@ -388,6 +478,28 @@ bool onload(JS::HandleValueArray args) {
 	return ok;
 }
 
+bool loadObject(int obj, int func, int id, int hash) {
+	JS::AutoValueArray<3> argv(self.cx);
+	argv[0].setInt32(obj);
+	argv[1].setInt32(func);
+	if (id <= 0) {
+		argv[2].setUndefined();
+		return onload(argv);
+	} else {
+		JS::RootedObject jsObj(self.cx, JS_NewPlainObject(self.cx));
+		JS::RootedValue rv1(self.cx);
+		JS::RootedValue rv2(self.cx);
+		rv1.setInt32(id);
+		rv2.setInt32(hash);
+		JS_SetProperty(self.cx, jsObj, "id", rv1);
+		JS_SetProperty(self.cx, jsObj, "hash", rv2);
+		argv[2].setObjectOrNull(jsObj);
+		bool res = onload(argv);
+		JS_FreezeObject(self.cx, jsObj);
+		return res;
+	}
+}
+
 bool load(int obj, int func) {
 	JS::AutoValueArray<2> argv(self.cx);
 	argv[0].setInt32(obj);
@@ -424,9 +536,46 @@ bool loadString(int obj, int func, const char16_t* s) {
 	JS::AutoValueArray<3> argv(self.cx);
 	argv[0].setInt32(obj);
 	argv[1].setInt32(func);
-	argv[2].setString(rs);
+	if (rs == nullptr) {
+		argv[2].setUndefined();
+	} else {
+		argv[2].setString(rs);
+	}
 	return onload(argv);
 }
+
+bool loadIntArray(int obj, int func, const int *iArr, size_t length) {
+	JS::AutoValueArray<3> argv(self.cx);
+	argv[0].setInt32(obj);
+	argv[1].setInt32(func);
+	if (iArr == nullptr) {
+		argv[2].setUndefined();
+	} else {
+		JS::RootedObject ro(self.cx, JS_NewArrayObject(self.cx, length));
+		for (size_t aN = 0; aN < length; aN++) {
+			JS_SetElement(self.cx, ro, aN, iArr[aN]);
+		}
+		argv[2].setObjectOrNull(ro);
+	}
+	return onload(argv);
+}
+
+bool loadDoubleArray(int obj, int func, const double *dArr, size_t length) {
+	JS::AutoValueArray<3> argv(self.cx);
+	argv[0].setInt32(obj);
+	argv[1].setInt32(func);
+	if (dArr == nullptr) {
+		argv[2].setUndefined();
+	} else {
+		JS::RootedObject ro(self.cx, JS_NewArrayObject(self.cx, length));
+		for (size_t aN = 0; aN < length; aN++) {
+			JS_SetElement(self.cx, ro, aN, dArr[aN]);
+		}
+		argv[2].setObjectOrNull(ro);
+	}
+	return onload(argv);
+}
+
 
 
 
@@ -441,11 +590,13 @@ bool test__OnAlert(char *s, size_t length) {
 }
 bool test__OnInvoke(int obj, int func, int argc) {
 	printf("invoke:%d-%d\n", obj, func);
-	readString(0);
+	CharArray s = readString(0);
+	DoubleArray arr = readDoubleArray(1);
 	//returnInt(12345);
 	//returnString(u"invoke-result");
-	const double d[] = { 1.1, 1.2, 1.3 };
-	returnDoubleArray(d, 3);
+	//const double d[] = { 1.1, 1.2, 1.3 };
+	//returnDoubleArray(d, 3);
+	returnObject(1000, 123456);
 	return true;
 }
 bool test__OnError(const char *filename, unsigned int lineno, const char *message) {
@@ -454,10 +605,12 @@ bool test__OnError(const char *filename, unsigned int lineno, const char *messag
 }
 int main() {
 	startupEngine(&test__OnImportScripts, &test__OnAlert, &test__OnInvoke, &test__OnError);
-	evaluate("function onload(obj,func,a){ for(var i=0;i<10;i++) alert('x'+invoke(0,0,a+'b')); importScripts('some'); foo.error(); } function boot(){alert('booted!');}", "test");
+	evaluate("function onload(obj,func,a){ alert('onload-arg:'+JSON.stringify(a)); alert('invoke-ret:'+JSON.stringify(invoke(0,0, 'hehe',[11.11,11.1,11]))); importScripts('some'); for(var i=0;i<10000;i++) {invoke(0,0, 'hahahahahahhaahhaha',[11.11,11.1,11]);} foo.error(); } function boot(){alert('booted!');}", "test");
 	callByName("boot");
-	loadInt(0, 0, 100);
-	loadInt(0, 0, 100);
+	loadObject(0, 0, 100, 123);
+	loadString(0, 0, u"hahahaha");
+	const double d[] = { 1.1, 1.2, 1.3 };
+	loadDoubleArray(0, 2, d, 3);
 	system("pause");
 	startupEngine(&test__OnImportScripts, &test__OnAlert, &test__OnInvoke, &test__OnError);
 	evaluate("function boot(){alert('2-booted!');}", "test");
