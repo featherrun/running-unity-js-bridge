@@ -27,7 +27,7 @@ struct class_SM {
 	JSCompartment *compartment;
 
 	JS::CallArgs invokeArgs; //javascript::invoke()
-	char* charArray = nullptr;
+	//char* charArray = nullptr;
 	int intArray[1024];
 	double doubleArray[1024];
 
@@ -337,7 +337,7 @@ DoubleArray readDoubleArray(int i) {
 			} else if (ev.isNumber()) {
 				arr[x] = ev.toDouble();
 			} else {
-				arr[x] = 0;
+				arr[x] = 0.0;
 			}
 		}
 
@@ -355,9 +355,6 @@ CharArray readString(int i) {
 	const JS::CallArgs args = self.invokeArgs;
 	JS::HandleValue v = args.get(i + 2);
 	CharArray res;
-	if (self.charArray != nullptr) {
-		JS_free(self.cx, self.charArray);
-	}
 	if (v.isString()) {
 		//JS::AutoCheckCannotGC nogc;
 		//w.s = JS_GetTwoByteStringCharsAndLength(self.cx, nogc, v.toString(), &w.length);
@@ -365,7 +362,8 @@ CharArray readString(int i) {
 		char* s = JS_EncodeStringToUTF8(self.cx, rs);
 		res.p = s;
 		res.length = strlen(s);
-		self.charArray = s;
+		//self.charArray = s;
+		JS_free(self.cx, s);
 	} else {
 		res.p = nullptr;
 		res.length = -1;
@@ -604,7 +602,10 @@ bool test__OnError(const char *filename, unsigned int lineno, const char *messag
 	return true;
 }
 int main() {
+	system("pause");
+	printf("startupEngine\n");
 	startupEngine(&test__OnImportScripts, &test__OnAlert, &test__OnInvoke, &test__OnError);
+	system("pause");
 	evaluate("function onload(obj,func,a){ alert('onload-arg:'+JSON.stringify(a)); alert('invoke-ret:'+JSON.stringify(invoke(0,0, 'hehe',[11.11,11.1,11]))); importScripts('some'); for(var i=0;i<10000;i++) {invoke(0,0, 'hahahahahahhaahhaha',[11.11,11.1,11]);} foo.error(); } function boot(){alert('booted!');}", "test");
 	callByName("boot");
 	loadObject(0, 0, 100, 123);
@@ -615,6 +616,7 @@ int main() {
 	startupEngine(&test__OnImportScripts, &test__OnAlert, &test__OnInvoke, &test__OnError);
 	evaluate("function boot(){alert('2-booted!');}", "test");
 	callByName("boot");
+	printf("shutdownEngine\n");
 	shutdownEngine();
 	system("pause");
 	return 0;
